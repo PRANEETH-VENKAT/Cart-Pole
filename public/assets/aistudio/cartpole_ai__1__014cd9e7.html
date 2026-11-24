@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Double Inverted Pendulum on a Cart</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center;
+    background: #0a0d12; color: #c9d3de;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 {
+    font-size: 15px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;
+    color: #6b7a8a; margin: 22px 0 12px;
+  }
+  canvas {
+    width: min(900px, 94vw); height: auto;
+    background: #0e141b; border: 1px solid #1a232d; border-radius: 12px;
+  }
+  .readouts { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 16px 0; }
+  .card {
+    background: #111820; border: 1px solid #1a232d; border-radius: 10px;
+    padding: 10px 16px; min-width: 130px; text-align: center;
+  }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #5b6878; }
+  .value { font-size: 20px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .buttons { display: flex; gap: 10px; }
+  button {
+    background: #161f2a; color: #c9d3de; border: 1px solid #263445;
+    padding: 10px 22px; border-radius: 8px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #1e2a38; }
+  button:active { transform: scale(0.98); }
+  #status { height: 18px; margin-top: 10px; font-size: 13px; color: #e0a46a; }
+  .help { font-size: 12px; color: #4f5c6b; margin-top: 10px; }
+  .buttons { flex-wrap: wrap; justify-content: center; }
+  button.on { background: #2a3f5c; border-color: #4a6a94; }
+  label.toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 10px 14px;
+    border: 1px solid #263445; border-radius: 8px; background: #161f2a; cursor: pointer; }
+  .panel { width: min(900px, 94vw); margin-top: 18px; }
+  .panel h2 { font-size: 12px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; color: #5b6878; margin: 0 0 8px; }
+  #chart { width: 100%; height: auto; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .cmp { background: #111820; border: 1px solid #1a232d; border-radius: 10px; padding: 12px 16px; }
+  .cmp .value { font-size: 26px; }
+  .bar { height: 6px; background: #1a232d; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; transition: width .3s; }
+  .legend { font-size: 12px; color: #5b6878; margin-top: 6px; display: flex; gap: 16px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Double Inverted Pendulum on a Cart</h1>
+<canvas id="view" width="900" height="520"></canvas>
+
+<div class="readouts">
+  <div class="card"><div class="label">Pole 1 angle</div><div class="value" id="a1">0.0°</div></div>
+  <div class="card"><div class="label">Pole 2 angle</div><div class="value" id="a2">0.0°</div></div>
+  <div class="card"><div class="label">Time balanced</div><div class="value" id="score">0.0 s</div></div>
+  <div class="card"><div class="label">Best</div><div class="value" id="best">0.0 s</div></div>
+  <div class="card"><div class="label">Uncertainty σ</div><div class="value" id="sig">—</div></div>
+</div>
+
+<div class="buttons">
+  <button id="kickBtn">Kick</button>
+  <button id="resetBtn">Reset</button>
+  <button id="trainBtn">Train AI</button>
+  <button id="watchBtn">Watch AI</button>
+  <label class="toggle"><input type="checkbox" id="quantumChk"> Quantum mode</label>
+</div>
+<div id="status"></div>
+<div class="panel">
+  <h2>Training: score vs round (seconds balanced, cap 8 s)</h2>
+  <canvas id="chart" width="900" height="190"></canvas>
+  <div class="legend"><span><i class="dot" style="background:#7aa2f7"></i>Classical</span><span><i class="dot" style="background:#c792ea"></i>Quantum</span><span id="trainInfo"></span></div>
+</div>
+<div class="panel">
+  <h2>Best AI score: Classical vs Quantum</h2>
+  <div class="compare">
+    <div class="cmp"><div class="label">Classical</div><div class="value" id="bestC">0.0 s</div><div class="bar"><div id="barC" style="background:#7aa2f7"></div></div></div>
+    <div class="cmp"><div class="label">Quantum</div><div class="value" id="bestQ">0.0 s</div><div class="bar"><div id="barQ" style="background:#c792ea"></div></div></div>
+  </div>
+</div>
+<div class="help">← → push the cart · Kick = random shove · a pole past 30° resets the run · Quantum: noisy angle readings + kick on every measurement</div>
+
+<script>
+// =====================================================================
+// 1) PHYSICS SETTINGS (change these to make the system heavier/longer)
+// =====================================================================
+const G = 9.81;                        // gravity (m/s^2)
+const MC = 1.0;                        // cart mass (kg)
+const L1 = 0.6, M1 = 0.3;              // pole 1: length (m), mass (kg)
+const L2 = 0.5, M2 = 0.2;              // pole 2: length (m), mass (kg)
+const A1 = L1 / 2, A2 = L2 / 2;        // pivot -> centre of mass of each pole
+const I1 = M1 * L1 * L1 / 12;          // rotational inertia of a thin rod about its centre
+const I2 = M2 * L2 * L2 / 12;
+
+// Shortcut groups that appear in the equations (keeps formulas short)
+const KA = M1 * A1 + M2 * L1;          // cart <-> pole 1 coupling
+const KB = M2 * A2;                    // cart <-> pole 2 coupling
+const KC = M2 * L1 * A2;               // pole 1 <-> pole 2 coupling
+
+const DT = 1 / 500;                    // physics time step (s). Smaller = more accurate.
+const MAX_ANGLE = 30 * Math.PI / 180;  // reset if a pole passes 30 degrees (radians)
+const TRACK_HALF = 2.0;                // cart resets if it runs past +/-2 m
+const KEY_FORCE = 20;                  // N, push while an arrow key is held
+const KICK_FORCE = 15;                 // N, strength of a kick
+const KICK_TIME = 0.15;                // s, how long a kick lasts
+
+const KEYS = ['x', 'th1', 'th2', 'dx', 'dth1', 'dth2'];
+
+// =====================================================================
+// 2) EQUATIONS OF MOTION (from the Lagrangian)
+//
+// Coordinates: q = [x, th1, th2]
+//   x   = cart position
+//   th  = pole angle measured from straight UP (0 = upright, + = leaning right)
+//
+// The Lagrangian gives:   M(q) * qdd = Q - bias(q, qd)
+//   M(q)  = 3x3 mass matrix (depends on the angles)
+//   Q     = generalised force (only the cart gets the push force)
+//   bias  = velocity-dependent terms + gravity
+// =====================================================================
+
+// Build the 3x3 mass matrix M(q)
+function massMatrix(th1, th2) {
+  const c1 = Math.cos(th1);
+  const c2 = Math.cos(th2);
+  const cd = Math.cos(th1 - th2);
+  return [
+    [MC + M1 + M2, KA * c1,        KB * c2],
+    [KA * c1,      M1 * A1 * A1 + I1 + M2 * L1 * L1, KC * cd],
+    [KB * c2,      KC * cd,        M2 * A2 * A2 + I2]
+  ];
+}
+
+// Right-hand side: push force + spinning terms + gravity
+function rhsVector(s, force) {
+  const s1 = Math.sin(s.th1);
+  const s2 = Math.sin(s.th2);
+  const sd = Math.sin(s.th1 - s.th2);
+  return [
+    force + KA * s1 * s.dth1 * s.dth1 + KB * s2 * s.dth2 * s.dth2,   // cart row
+    G * KA * s1 - KC * sd * s.dth2 * s.dth2,                         // pole 1 row
+    G * KB * s2 + KC * sd * s.dth1 * s.dth1                          // pole 2 row
+  ];
+}
+
+// Solve the 3x3 system M * x = b using Gaussian elimination
+function solve3(M, b) {
+  // Make an augmented copy [M | b] so we don't change the originals
+  const a = M.map((row, i) => [...row, b[i]]);
+
+  // Forward elimination (turn the matrix into an upper triangle)
+  for (let col = 0; col < 3; col++) {
+    // Pivot: swap in the row with the biggest value (keeps numbers stable)
+    let pivot = col;
+    for (let r = col + 1; r < 3; r++) {
+      if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
+    }
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+
+    // Remove this variable from the rows below
+    for (let r = col + 1; r < 3; r++) {
+      const f = a[r][col] / a[col][col];
+      for (let k = col; k < 4; k++) a[r][k] -= f * a[col][k];
+    }
+  }
+
+  // Back substitution (solve from the bottom row up)
+  const x = [0, 0, 0];
+  for (let r = 2; r >= 0; r--) {
+    let sum = a[r][3];
+    for (let k = r + 1; k < 3; k++) sum -= a[r][k] * x[k];
+    x[r] = sum / a[r][r];
+  }
+  return x;
+}
+
+// "How fast is everything changing?" -> returns the derivatives of the state
+function derivative(s, force) {
+  const M = massMatrix(s.th1, s.th2);
+  const rhs = rhsVector(s, force);
+  const acc = solve3(M, rhs);          // [ddx, ddth1, ddth2]
+  return {
+    x: s.dx, th1: s.dth1, th2: s.dth2,
+    dx: acc[0], dth1: acc[1], dth2: acc[2]
+  };
+}
+
+// Helper: state + derivative * h  (used inside RK4)
+function addScaled(s, d, h) {
+  const out = {};
+  for (const key of KEYS) out[key] = s[key] + d[key] * h;
+  return out;
+}
+
+// =====================================================================
+// 3) THE STEP FUNCTION (physics only, no drawing)
+// Takes the current state and a constant force, returns the state one
+// time step later. Uses RK4 (Runge-Kutta 4th order) for accuracy.
+// An AI controller can call this directly: step(state, force).
+// =====================================================================
+function step(state, force, dt = DT) {
+  const k1 = derivative(state, force);
+  const k2 = derivative(addScaled(state, k1, dt / 2), force);
+  const k3 = derivative(addScaled(state, k2, dt / 2), force);
+  const k4 = derivative(addScaled(state, k3, dt), force);
+
+  const out = {};
+  for (const key of KEYS) {
+    out[key] = state[key] + (dt / 6) * (k1[key] + 2 * k2[key] + 2 * k3[key] + k4[key]);
+  }
+  return out;
+}
+
+// =====================================================================
+// 4) SIMULATION STATE AND CONTROLS
+// =====================================================================
+function freshState() {
+  // Start almost upright, with a tiny random wobble (about +/- 3 degrees)
+  return {
+    x: 0,
+    th1: (Math.random() - 0.5) * 0.1,
+    th2: (Math.random() - 0.5) * 0.1,
+    dx: 0, dth1: 0, dth2: 0
+  };
+}
+
+let state = freshState();
+let runTime = 0;            // seconds balanced in this run
+let bestTime = 0;           // best run so far
+let leftHeld = false;
+let rightHeld = false;
+let kickTimeLeft = 0;      // seconds of kick remaining
+let kickPush = 0;          // strength of the current kick (N)
+let accumulator = 0;       // leftover time not yet simulated
+let lastFrame = performance.now();
+
+const statusEl = document.getElementById('status');
+
+// =====================================================================
+// 4b) AI + QUANTUM SETTINGS
+// =====================================================================
+const CTRL_DT = 0.02;          // AI / measurement period (s)
+const CTRL_STEPS = Math.round(CTRL_DT / DT);
+const F_MAX = 30;              // N, AI force limit
+const TRAIN_SUB = 4;           // physics sub-steps per control tick while training (speed)
+const EP_MAX = 8;              // s, training episode length (score cap)
+const Q_GROW = 0.135;          // rad^2/s, how fast the cloud spreads between measurements
+const Q_SHRINK = 0.5;          // cloud shrinks to this fraction after a measurement
+const Q_FLOOR = 0.004;         // rad, smallest cloud spread
+const Q_KICK = 0.08;           // rad/s, back-action kick (std dev) on each pole
+const Q_START = 0.03;          // rad, starting spread
+const N_GHOST = 30;
+const CURRICULUM = [0.01, 0.03, 0.05, 0.08, 0.12];  // starting-angle ranges (rad), easy -> hard
+const ES_PAIRS = 10, ES_STARTS = 2, ES_ELITE = 5, ES_LR = 0.7;
+const ES_SCALE = [1.5, 2.5, 40, 8, 40, 8];          // per-weight exploration size
+
+let quantumOn = false;
+let qState = { sigma: Q_START };
+const ghostZ = Array.from({ length: N_GHOST }, () => [gauss(), gauss()]);
+let aiOn = false;              // true while "Watch AI" is active
+let training = false;
+let stepCount = 0;
+let aiForce = 0;
+
+// Per-mode learned policy + training progress ('c' = classical, 'q' = quantum)
+const brain = {
+  c: { w: [0, 0, 0, 0, 0, 0], smult: 1, stage: 0, hist: [] },
+  q: { w: [0, 0, 0, 0, 0, 0], smult: 1, stage: 0, hist: [] }
+};
+const bestAI = { c: 0, q: 0 };
+const modeKey = () => quantumOn ? 'q' : 'c';
+
+function gauss() {
+  let u = 0; while (!u) u = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+}
+
+// Linear policy: force = w . [x, dx, th1, dth1, th2, dth2]
+function policy(w, o) {
+  let u = 0;
+  for (let i = 0; i < 6; i++) u += w[i] * o[i];
+  return Math.max(-F_MAX, Math.min(F_MAX, u));
+}
+
+// One quantum measurement: the cloud spreads, we read a noisy angle (noise = cloud spread),
+// both poles get a random kick (back-action), then the cloud shrinks.
+// `grown` = true if the caller already spread the cloud this tick (live sim does it per step).
+function quantumMeasure(s, q, grown) {
+  if (!grown) q.sigma = Math.sqrt(q.sigma * q.sigma + Q_GROW * CTRL_DT);
+  const m1 = s.th1 + gauss() * q.sigma;
+  const m2 = s.th2 + gauss() * q.sigma;
+  s.dth1 += gauss() * Q_KICK;
+  s.dth2 += gauss() * Q_KICK;
+  q.sigma = Math.max(Q_FLOOR, q.sigma * Q_SHRINK);
+  return [m1, m2];
+}
+
+// ---------------------------------------------------------------------
+// Training rollouts (no drawing). Returns seconds balanced + shaped fitness.
+// ---------------------------------------------------------------------
+function startState(range) {
+  return { x: 0, th1: (Math.random() * 2 - 1) * range, th2: (Math.random() * 2 - 1) * range, dx: 0, dth1: 0, dth2: 0 };
+}
+
+function fell(st) {
+  return Math.abs(st.th1) > MAX_ANGLE || Math.abs(st.th2) > MAX_ANGLE || Math.abs(st.x) > TRACK_HALF;
+}
+
+function rollout(w, quantum, s0) {
+  let s = { ...s0 };
+  const q = { sigma: Q_START };
+  const dt = CTRL_DT / TRAIN_SUB;              // 5 ms physics step (confirmed to transfer to the 2 ms live step)
+  const steps = Math.round(EP_MAX / CTRL_DT);  // same run length as the live cap
+  let t = 0, fit = 0;
+  for (let n = 0; n < steps; n++) {
+    let m1 = s.th1, m2 = s.th2;
+    if (quantum) [m1, m2] = quantumMeasure(s, q, false);
+    const force = policy(w, [s.x, s.dx, m1, s.dth1, m2, s.dth2]);
+    let next = s;
+    for (let i = 0; i < TRAIN_SUB; i++) next = step(next, force, dt);
+    if (fell(next)) break;
+    s = next;
+    t += CTRL_DT;
+    fit += 1 + Math.max(0, 1 - (Math.abs(s.th1) + Math.abs(s.th2)) / (2 * MAX_ANGLE));
+  }
+  return { t, fit };
+}
+
+// ---------------------------------------------------------------------
+// Evolution strategy: one training round.
+// Try many random tweaks (mirrored +/-), keep the best few, average them
+// into the current weights.
+// ---------------------------------------------------------------------
+function* trainRoundGen(key, quantum) {
+  const B = brain[key];
+  const range = CURRICULUM[B.stage];
+  const starts = Array.from({ length: ES_STARTS }, () => startState(range));
+  const cands = [];
+  for (let p = 0; p < ES_PAIRS; p++) {
+    const d = ES_SCALE.map(sc => gauss() * sc * B.smult);
+    for (const sign of [1, -1]) {
+      const w = B.w.map((m, i) => m + sign * d[i]);
+      let f = 0;
+      for (const s0 of starts) { f += rollout(w, quantum, s0).fit; yield; }
+      cands.push({ w, f });
+    }
+  }
+  cands.sort((x, y) => y.f - x.f);
+  const elite = cands.slice(0, ES_ELITE);
+  const avg = B.w.map((_, i) => elite.reduce((acc, c) => acc + c.w[i], 0) / ES_ELITE);
+  B.w = B.w.map((m, i) => m + ES_LR * (avg[i] - m));
+  B.smult = Math.max(0.15, B.smult * 0.98);
+
+  // Evaluate the new weights on the current difficulty (same run length as Watch AI)
+  let sum = 0, best = 0;
+  const N = 3;
+  for (let i = 0; i < N; i++) {
+    const t = rollout(B.w, quantum, startState(range)).t;
+    sum += t; best = Math.max(best, t);
+    yield;
+  }
+  const score = sum / N;
+  B.hist.push({ s: score, stage: B.stage });
+  bestAI[key] = Math.max(bestAI[key], best);   // best single run, same definition as Watch AI
+
+  // Make it harder once it's reliably good
+  if (score >= 0.9 * EP_MAX && B.stage < CURRICULUM.length - 1) {
+    B.stage++;
+    B.smult = Math.max(B.smult, 0.5);
+  }
+  return score;
+}
+
+const TRAIN_SLICE_MS = 12;   // max time per slice before handing control back to the browser
+let trainToken = 0;          // bumped on every Start/Stop, so old loops quietly die
+let trainGen = null, trainKey = null, trainQuantum = false;
+
+function reportRound(key, score) {
+  const B = brain[key];
+  document.getElementById('trainInfo').textContent =
+    `${key === 'q' ? 'Quantum' : 'Classical'} · round ${B.hist.length} · level ${B.stage + 1}/${CURRICULUM.length} (±${(CURRICULUM[B.stage] * 180 / Math.PI).toFixed(1)}°) · score ${score.toFixed(1)} s`;
+  drawChart();
+  updateCompare();
+}
+
+function trainLoop(token) {
+  if (!training || token !== trainToken) return;
+  const t0 = performance.now();
+  while (performance.now() - t0 < TRAIN_SLICE_MS) {
+    if (!trainGen) {
+      trainKey = modeKey();
+      trainQuantum = quantumOn;
+      trainGen = trainRoundGen(trainKey, trainQuantum);
+    }
+    const r = trainGen.next();
+    if (r.done) { trainGen = null; reportRound(trainKey, r.value); }
+  }
+  setTimeout(() => trainLoop(token), 0);
+}
+
+function setTraining(on) {
+  training = on;
+  trainToken++;
+  trainGen = null;             // discard any half-finished round
+  const btn = document.getElementById('trainBtn');
+  btn.textContent = on ? 'Stop training' : 'Train AI';
+  btn.classList.toggle('on', on);
+  if (on) {
+    // Quantum mode warm start: copy classical weights if quantum is still untrained
+    const q = brain.q;
+    if (quantumOn && q.hist.length === 0 && brain.c.hist.length > 0) q.w = brain.c.w.slice();
+    statusEl.textContent = 'Training…';
+    const token = trainToken;
+    setTimeout(() => trainLoop(token), 20);
+  } else {
+    statusEl.textContent = '';
+  }
+}
+
+function setWatch(on) {
+  if (on && !brain[modeKey()].hist.length) {
+    statusEl.textContent = 'Train the AI first (current mode has no trained policy)';
+    setTimeout(() => { statusEl.textContent = ''; }, 2500);
+    return;
+  }
+  aiOn = on;
+  const btn = document.getElementById('watchBtn');
+  btn.textContent = on ? 'Manual control' : 'Watch AI';
+  btn.classList.toggle('on', on);
+  resetRun();
+}
+
+function setQuantum(on) {
+  quantumOn = on;
+  qState.sigma = Q_START;
+  if (aiOn && !brain[modeKey()].hist.length) {
+    setWatch(false);
+    statusEl.textContent = 'This mode has no trained policy yet';
+    setTimeout(() => { if (!training) statusEl.textContent = ''; }, 2500);
+  }
+  resetRun();
+}
+
+// Total manual force on the cart this physics step
+function currentForce() {
+  let F = 0;
+  if (leftHeld)  F -= KEY_FORCE;
+  if (rightHeld) F += KEY_FORCE;
+  if (kickTimeLeft > 0) F += kickPush;
+  return F;
+}
+
+// Start a new run
+function resetRun(reason) {
+  if (aiOn) bestAI[modeKey()] = Math.max(bestAI[modeKey()], runTime);
+  bestTime = Math.max(bestTime, runTime);
+  state = freshState();
+  runTime = 0;
+  accumulator = 0;
+  kickTimeLeft = 0;
+  stepCount = 0;
+  aiForce = 0;
+  qState.sigma = Q_START;
+  updateCompare();
+  if (reason) {
+    statusEl.textContent = reason;
+    setTimeout(() => { if (!training) statusEl.textContent = ''; }, 1800);
+  }
+}
+
+// Random shove to the left or right
+function kick() {
+  const direction = Math.random() < 0.5 ? -1 : 1;
+  kickPush = direction * KICK_FORCE * (0.5 + 0.5 * Math.random());
+  kickTimeLeft = KICK_TIME;
+}
+
+// Run as many small physics steps as the elapsed real time needs
+function advance(seconds) {
+  accumulator += seconds;
+  while (accumulator >= DT) {
+    // Control / measurement tick (every CTRL_DT)
+    if ((aiOn || quantumOn) && stepCount % CTRL_STEPS === 0) {
+      let m1 = state.th1, m2 = state.th2;
+      if (quantumOn) [m1, m2] = quantumMeasure(state, qState, true);
+      if (aiOn) aiForce = policy(brain[modeKey()].w, [state.x, state.dx, m1, state.dth1, m2, state.dth2]);
+    }
+    stepCount++;
+
+    state = step(state, (aiOn ? aiForce : 0) + currentForce());
+    if (quantumOn) qState.sigma = Math.sqrt(qState.sigma * qState.sigma + Q_GROW * DT); // cloud spreads between measurements
+    runTime += DT;
+    kickTimeLeft -= DT;
+    accumulator -= DT;
+    if (aiOn && runTime >= EP_MAX - 1e-9) {
+      resetRun('Reached the ' + EP_MAX + ' s cap, new run');
+      return;
+    }
+
+    if (Math.abs(state.th1) > MAX_ANGLE || Math.abs(state.th2) > MAX_ANGLE) {
+      resetRun('A pole fell past 30° — resetting');
+      return;
+    }
+    if (Math.abs(state.x) > TRACK_HALF) {
+      resetRun('The cart hit the end of the track — resetting');
+      return;
+    }
+  }
+  if (aiOn) bestAI[modeKey()] = Math.max(bestAI[modeKey()], runTime);
+}
+
+// =====================================================================
+// 5) DRAWING
+// =====================================================================
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+const PX = 200;          // pixels per metre
+const PIVOT_Y = 330;     // screen y of the cart's top (where pole 1 attaches)
+const CART_W = 90;
+const CART_H = 34;
+
+function toScreenX(x) { return canvas.width / 2 + x * PX; }
+
+function drawLine(x1, y1, x2, y2, color, width) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function drawJoint(x, y) {
+  ctx.fillStyle = '#e6edf5';
+  ctx.beginPath();
+  ctx.arc(x, y, 6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const groundY = PIVOT_Y + CART_H;
+  const pivotX = toScreenX(state.x);
+
+  // Track and end walls
+  drawLine(toScreenX(-TRACK_HALF), groundY, toScreenX(TRACK_HALF), groundY, '#2a3644', 2);
+  drawLine(toScreenX(-TRACK_HALF), groundY - 14, toScreenX(-TRACK_HALF), groundY, '#2a3644', 2);
+  drawLine(toScreenX(TRACK_HALF), groundY - 14, toScreenX(TRACK_HALF), groundY, '#2a3644', 2);
+
+  // Dashed 30-degree guide lines from the pivot
+  ctx.setLineDash([5, 6]);
+  const guideLen = 300;
+  drawLine(pivotX, PIVOT_Y, pivotX - guideLen * Math.sin(MAX_ANGLE), PIVOT_Y - guideLen * Math.cos(MAX_ANGLE), '#1f2a36', 1);
+  drawLine(pivotX, PIVOT_Y, pivotX + guideLen * Math.sin(MAX_ANGLE), PIVOT_Y - guideLen * Math.cos(MAX_ANGLE), '#1f2a36', 1);
+  ctx.setLineDash([]);
+
+  // Cart body and wheels
+  ctx.fillStyle = '#26364a';
+  ctx.fillRect(pivotX - CART_W / 2, PIVOT_Y, CART_W, CART_H);
+  ctx.fillStyle = '#4a5d73';
+  ctx.beginPath(); ctx.arc(pivotX - 25, groundY, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(pivotX + 25, groundY, 6, 0, Math.PI * 2); ctx.fill();
+
+  // Pole 1: from the cart's pivot up to joint 1
+  const j1x = pivotX + L1 * PX * Math.sin(state.th1);
+  const j1y = PIVOT_Y - L1 * PX * Math.cos(state.th1);
+
+  // Pole 2: from joint 1 (top of pole 1) up to the tip
+  const j2x = j1x + L2 * PX * Math.sin(state.th2);
+  const j2y = j1y - L2 * PX * Math.cos(state.th2);
+
+  // Quantum cloud: faint ghost copies of both poles spread around the real angles
+  if (quantumOn) {
+    ctx.globalAlpha = 0.07;
+    for (const [z1, z2] of ghostZ) {
+      const g1 = state.th1 + z1 * qState.sigma, g2 = state.th2 + z2 * qState.sigma;
+      const gx = pivotX + L1 * PX * Math.sin(g1), gy = PIVOT_Y - L1 * PX * Math.cos(g1);
+      drawLine(pivotX, PIVOT_Y, gx, gy, '#7aa2f7', 7);
+      drawLine(gx, gy, gx + L2 * PX * Math.sin(g2), gy - L2 * PX * Math.cos(g2), '#f7a072', 7);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  drawLine(pivotX, PIVOT_Y, j1x, j1y, '#7aa2f7', 8);
+  drawLine(j1x, j1y, j2x, j2y, '#f7a072', 8);
+  drawJoint(pivotX, PIVOT_Y);
+  drawJoint(j1x, j1y);
+  drawJoint(j2x, j2y);
+}
+
+// =====================================================================
+// 6) READOUTS, INPUT, AND THE ANIMATION LOOP
+// =====================================================================
+function updateReadouts() {
+  const toDeg = r => (r * 180 / Math.PI).toFixed(1) + '°';
+  document.getElementById('a1').textContent = toDeg(state.th1);
+  document.getElementById('a2').textContent = toDeg(state.th2);
+  document.getElementById('score').textContent = runTime.toFixed(1) + ' s';
+  document.getElementById('best').textContent = Math.max(bestTime, runTime).toFixed(1) + ' s';
+  document.getElementById('sig').textContent = quantumOn ? (qState.sigma * 180 / Math.PI).toFixed(2) + '°' : '—';
+}
+
+// ---- Training chart (score vs round, one line per mode)
+const chart = document.getElementById('chart');
+const cctx = chart.getContext('2d');
+function drawChart() {
+  const W = chart.width, H = chart.height, pl = 40, pr = 12, pt = 10, pb = 24;
+  cctx.clearRect(0, 0, W, H);
+  cctx.font = '11px system-ui'; cctx.fillStyle = '#5b6878'; cctx.strokeStyle = '#1a232d'; cctx.lineWidth = 1;
+  for (const v of [0, 4, 8]) {
+    const y = H - pb - (v / EP_MAX) * (H - pt - pb);
+    cctx.beginPath(); cctx.moveTo(pl, y); cctx.lineTo(W - pr, y); cctx.stroke();
+    cctx.fillText(v + ' s', 6, y + 4);
+  }
+  const n = Math.max(50, brain.c.hist.length, brain.q.hist.length);
+  cctx.fillText('round 0', pl, H - 6);
+  cctx.fillText('round ' + n, W - pr - 55, H - 6);
+  for (const [k, color] of [['c', '#7aa2f7'], ['q', '#c792ea']]) {
+    const h = brain[k].hist;
+    if (!h.length) continue;
+    cctx.strokeStyle = color; cctx.lineWidth = 2; cctx.beginPath();
+    h.forEach((p, i) => {
+      const x = pl + (i / n) * (W - pl - pr);
+      const y = H - pb - (Math.min(p.s, EP_MAX) / EP_MAX) * (H - pt - pb);
+      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+    });
+    cctx.stroke();
+  }
+}
+
+function updateCompare() {
+  document.getElementById('bestC').textContent = bestAI.c.toFixed(1) + ' s';
+  document.getElementById('bestQ').textContent = bestAI.q.toFixed(1) + ' s';
+  const m = Math.max(bestAI.c, bestAI.q, EP_MAX);
+  document.getElementById('barC').style.width = (100 * bestAI.c / m) + '%';
+  document.getElementById('barQ').style.width = (100 * bestAI.q / m) + '%';
+}
+
+// Arrow keys: hold to push
+window.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft')  { leftHeld = true;  e.preventDefault(); }
+  if (e.key === 'ArrowRight') { rightHeld = true; e.preventDefault(); }
+});
+window.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft')  leftHeld = false;
+  if (e.key === 'ArrowRight') rightHeld = false;
+});
+
+document.getElementById('kickBtn').addEventListener('click', kick);
+document.getElementById('resetBtn').addEventListener('click', () => resetRun());
+document.getElementById('trainBtn').addEventListener('click', () => setTraining(!training));
+document.getElementById('watchBtn').addEventListener('click', () => setWatch(!aiOn));
+document.getElementById('quantumChk').addEventListener('change', e => setQuantum(e.target.checked));
+drawChart();
+updateCompare();
+
+function frame(now) {
+  // Real time since last frame, capped so a paused tab doesn't cause a huge jump
+  const seconds = Math.min((now - lastFrame) / 1000, 0.05);
+  lastFrame = now;
+
+  advance(seconds);
+  draw();
+  updateReadouts();
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
